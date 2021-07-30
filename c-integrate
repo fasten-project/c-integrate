@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+# Copyright (c) 2018-2020 FASTEN.
+#
+# This file is part of FASTEN
+# (see https://www.fasten-project.eu/).
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+import argparse
+import csv
+import json
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        "Integrate FASTEN static and dynamic call graphs"
+    )
+    parser.add_argument("stitched")
+    parser.add_argument("dynamic", nargs='*')
+    parser.add_argument("output")
+    return parser.parse_args()
+
+
+def get_product_version(uri):
+    prefix_less = uri[uri.find('//')+2:]
+    product_version = prefix_less[:prefix_less.find('/')]
+    if '$' in product_version:
+        product = product_version[:product_version.find('$')]
+        version = product_version[product_version.find('$')+1:]
+    else: 
+        product = product_version
+        version = None
+    return product, version
+
+
+def parse_stitched(graph):
+    versions = {}
+    with open(graph) as f:
+        data = json.load(f)
+        for edge in data["edges"]:
+            edge.append({"static": True, "dynamic": False})
+        for node in data["nodes"].values():
+            product, version = get_product_version(node['URI'])
+            if version:
+                versions[product] = version
+        return data, versions
+
+
+def process_dynamic(graph, integrated_graph, versions, counter, nodes_lookup):
+    def convert_node(node):
+        product, version = get_product_version(node)
+        if not node.startswith('fasten'):
+            node = "fasten:" + node
+        if version is None:
+            version = versions.get(product, None)
+            if version:
+                node = "fasten://{product}${version}{rest}".format(
+                    product=product,
+                    version=version,
+                    # 9 is the length of the prefix
+                    rest=node[9+len(product):]
+                )
+        return node
+
+    def get_node_id(counter, node):
+            nid = nodes_lookup.get(node, None)
+            if nid is None:
+                counter += 1
+                nodes_lookup[node] = str(counter)
+                integrated_graph["nodes"][str(counter)] = {
+                    "URI": node, "metadata": {}
+                }
+                nid = counter
+                return nid, counter
+            return int(nid), counter
+
+    with open(graph) as f:
+        data = json.load(f)
+        for edge in data:
+            n1 = convert_node(edge[0])
+            n2 = convert_node(edge[1])
+            n1_id, counter = get_node_id(counter, n1)
+            n2_id, counter = get_node_id(counter, n2)
+            already_exist = False
+            for edge in integrated_graph["edges"]:
+                if edge[0] == n1_id and edge[1] == n2_id:
+                    edge[2]["dynamic"] = True
+                    already_exist = True
+                    break
+            if not already_exist:
+                integrated_graph["edges"].append(
+                    [n1_id, n2_id, {"static": False, "dynamic": True}]
+                )
+
+    
+def get_nodes_lookup_and_counter(graph):
+    counter = 0
+    lookup = {}
+    for k, v in graph['nodes'].items():
+        if int(k) > counter:
+            counter = int(k)
+        lookup[v["URI"]] = k
+    return lookup, counter
+
+
+def main():
+    args = parse_args()
+
+    integrated_graph, versions = parse_stitched(args.stitched)
+    print(integrated_graph)
+    nodes_lookup, counter = get_nodes_lookup_and_counter(integrated_graph)
+
+    for dynamic in args.dynamic:
+        process_dynamic(dynamic, integrated_graph, versions, 
+                        counter, nodes_lookup)
+
+    with open(args.output, 'w') as out:
+        json.dump(integrated_graph, out)
+
+
+if __name__ == "__main__":
+    main()

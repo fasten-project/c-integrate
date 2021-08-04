@@ -19,6 +19,15 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+Install
+-------
+
+* Unix
+
+```bash
+cp c-integrate /usr/local/bin
+```
+
 Example
 -------
 
